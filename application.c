@@ -1,107 +1,3 @@
-// Sam Siewert, December 2020
-//
-// Sequencer Generic Demonstration
-//
-// The purpose of this code is to provide an example for how to best
-// sequence a set of periodic services in Linux user space without specialized hardware like
-// an auxiliary programmable interval timere and/or real-time clock.  For problems similar to and including
-// the final project in real-time systems.
-//
-// AMP Configuration (check core status with "lscpu"):
-//
-// 1) Uses SCEHD_FIFO - https://man7.org/linux/man-pages//man7/sched.7.html
-// 2) Sequencer runs on core 1
-// 3) EVEN thread indexes run on core 2
-// 4) ODD thread indexes run on core 3
-// 5) Linux kernel mostly runs on core 0, but does load balance non-RT workload over all cores
-// 6) check for irqbalance [https://linux.die.net/man/1/irqbalance] which also distribute IRQ handlers
-//
-// What we really want in addition to SCHED_FIFO with CPU core affinity is:
-//
-// 1) A reliable periodic source of interrupts (emulated by delay in a loop here)
-// 2) An accurate (minimal drift) and precise timestamp
-//    * e.g. accurate to 1 millisecond or less, ideally 1 microsecond, but not realistic on an RTOS even
-//    * overall, what we want is predictable response with some accuracy (minimal drift) and precision
-//
-// Linux user space presents a challenge because:
-//
-// 1) Accurate timestamps are either not available or the ASM instructions to read system clocks can't
-//    be issued in user space for security reasons (x86 and x64 TSC, ARM STC).
-// 2) User space time with clock_gettime is recommended, but still requires the overhead of a system call
-// 3) Linux user space is inherently driven by the jiffy and tick as shown by:
-//    * "getconf CLK_TCK" - normall 10 msec tick at 100 Hz
-//    * cat /proc/timer_list
-// 4) Linux kernel space certainly has more accurate timers that are high resolution, but we would have to
-//    write our entire solution as a kernel module and/or use custom kernel modules for timekeeping and
-//    selected services.
-// 5) Linux kernel patches for best real-time performance include RT PREEMPT (http://www.frank-durr.de/?p=203)
-// 6) MUTEX semaphores can cause unbounded priority inversion with SCHED_FIFO, so they should be avoided or
-//    * use kernel patches for RT semaphore support
-//      [https://opensourceforu.com/2019/04/how-to-avoid-priority-inversion-and-enable-priority-inheritance-in-linux-kernel-programming/]
-//    * use the FUTEX instead of standard POSIX semaphores
-//      [https://eli.thegreenplace.net/2018/basics-of-futexes/]
-//    * POSIX sempaphores do have inversion safe features, but they do not work on un-patched Linux distros
-//
-// However, for our class goals for soft real-time synchronization with a 1 Hz and a 10 Hz external
-// clock (and physical process), the user space approach should provide sufficient accuracy required and
-// precision which is limited by our camera frame rate to 30 Hz anyway (33.33 msec).
-//
-// Sequencer - 100 Hz 
-//                   [gives semaphores to all other services]
-// Service_1 - 50 Hz, every other Sequencer loop
-// Service_2 - 20 Hz, every 5th Sequencer loop 
-// Service_3 - 10 Hz ,every 10th Sequencer loop
-// Service_4 -  5 Hz, every 20th Sequencer loop
-// Service_5 -  2 Hz ,every 50th Sequencer loop
-// Service_6 -  1 Hz, every 100th Sequencer loop
-// Service_7 -  1 Hz, every 100th Sequencer loop
-//
-// With the above, priorities by RM policy would be:
-//
-// Sequencer = RT_MAX	@ 100 Hz
-// Servcie_1 = RT_MAX-1	@ 50  Hz
-// Service_2 = RT_MAX-2	@ 20  Hz
-// Service_3 = RT_MAX-3	@ 10  Hz
-// Service_4 = RT_MAX-4	@ 5   Hz
-// Service_5 = RT_MAX-5	@ 2   Hz
-// Service_6 = RT_MAX-6	@ 1   Hz
-// Service_7 = RT_MIN	@ 1   Hz
-//
-/////////////////////////////////////////////////////////////////////////////
-// JETSON SYSTEM NOTES:
-/////////////////////////////////////////////////////////////////////////////
-//
-// Here are a few hardware/platform configuration settings on your Jetson
-// that you should also check before running this code:
-//
-// 1) Check to ensure all your CPU cores on in an online state - USE "lscpu"
-//
-// 2) Check /sys/devices/system/cpu or do lscpu.
-//
-//    Tegra is normally configured to hot-plug CPU cores, so to make all
-//    available, as root do:
-//
-//    echo 0 > /sys/devices/system/cpu/cpuquiet/tegra_cpuquiet/enable
-//    echo 1 > /sys/devices/system/cpu/cpu1/online
-//    echo 1 > /sys/devices/system/cpu/cpu2/online
-//    echo 1 > /sys/devices/system/cpu/cpu3/online
-//
-// 3) The Jetson NANO requiress a sysctl setting to allow for SCHED_FIFO to be used:
-//
-//    sysctl -w kernel.sched_rt_runtime_us=-1
-//
-//    See - https://forums.developer.nvidia.com/t/pthread-setschedparam-sched-fifo-fails/64394/3
-//
-// 4) Check for precision time resolution and support with cat /proc/timer_list
-//
-// 5) Ideally all printf calls should be eliminated as they can interfere with
-//    timing.  They should be replaced with an in-memory event logger or at
-//    least calls to syslog.
-//
-// 6) For determinism, you should use CPU affinity for AMP scheduling.  Note that without specific affinity,
-//    threads will be SMP by default, annd will be migrated to the least busy core, so be careful.
-
-// This is necessary for CPU affinity macros in Linux  -ltime -lsignal -lsemaphore -lstdlib -lstdio -lunistd -lsched -lerrno
 #define _GNU_SOURCE
 
 #include <stdio.h>
@@ -111,7 +7,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <time.h>
-#include <semaphore.h>
+#include <semaphore.h>o
 
 #include <wiringPi.h>
 
@@ -122,7 +18,7 @@
 
 #include <signal.h>
 
-#include <unistd.h>			//Used for UART
+#include <unistd.h>			//Used for UART                                                                                                                                                                                             
 #include <fcntl.h>			//Used for UART
 #include <termios.h>		//Used for UART
 
