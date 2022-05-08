@@ -58,7 +58,7 @@ static unsigned long long seqCnt=0;
 typedef struct
 {
     int threadIdx;
-} threadParams_t;
+} threadParams_t; //test
 
 
 void Sequencer(int id);
