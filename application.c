@@ -1,3 +1,11 @@
+//
+// Core 0 = Linux Kernel 
+// Core 1 = Sequencer - triggered by interval timer
+// Core 2 = Even Service threads - triggered by sequencer
+// Core 3 = Odd Service threads - triggered by sequencer
+//
+// Sequencer based on sample sequencer from Sam Siewert RTOS course on Courseera
+//
 #define _GNU_SOURCE
 
 #include <stdio.h>
@@ -7,7 +15,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <time.h>
-#include <semaphore.h>o
+#include <semaphore.h>
 
 #include <wiringPi.h>
 
@@ -21,6 +29,8 @@
 #include <unistd.h>			//Used for UART                                                                                                                                                                                             
 #include <fcntl.h>			//Used for UART
 #include <termios.h>		//Used for UART
+#include "serial.h"         //Used for UART
+#include <string.h>
 
 #define USEC_PER_MSEC (1000)
 #define NANOSEC_PER_MSEC (1000000)
@@ -44,7 +54,7 @@
 
 int abortTest=FALSE;
 int abortS1=FALSE, abortS2=FALSE, abortS3=FALSE, abortS4=FALSE, abortS5=FALSE, abortS6=FALSE, abortS7=FALSE;
-sem_t semS1, semS2, semS3, semS4, semS5, semS6, semS7;
+sem_t semS1, semS2, semS3, semS4, semS5, semS6, semS7, semSerial;
 struct timespec start_time_val;
 double start_realtime;
 unsigned long long sequencePeriods;
@@ -71,6 +81,16 @@ void *Service_5(void *threadp);
 void *Service_6(void *threadp);
 void *Service_7(void *threadp);
 
+long service_2_data;
+
+// UART 
+int fd;
+int nread;
+int nwrite;
+char buffer[15] = {};
+    
+
+int i, rc, scope, flags=0;
 
 double getTimeMsec(void);
 double realtime(struct timespec *tsptr);
@@ -119,8 +139,6 @@ void main(void)
     struct timespec current_time_val, current_time_res;
     double current_realtime, current_realtime_res;
 
-    int i, rc, scope, flags=0;
-
     cpu_set_t threadcpu;
     cpu_set_t allcpuset;
 
@@ -164,6 +182,7 @@ void main(void)
     if (sem_init (&semS5, 0, 0)) { printf ("Failed to initialize S5 semaphore\n"); exit (-1); }
     if (sem_init (&semS6, 0, 0)) { printf ("Failed to initialize S6 semaphore\n"); exit (-1); }
     if (sem_init (&semS7, 0, 0)) { printf ("Failed to initialize S7 semaphore\n"); exit (-1); }
+    if (sem_init (&semSerial, 0, 0)) { printf ("Failed to initialize SemSerial semaphore\n"); exit (-1); }
 
     mainpid=getpid();
 
@@ -215,17 +234,15 @@ void main(void)
       }
 
       rc=pthread_attr_init(&rt_sched_attr[i]);
-      rc=pthread_attr_setinheritsched(&rt_sched_attr[i], PTHREAD_EXPLICIT_SCHED);
-      rc=pthread_attr_setschedpolicy(&rt_sched_attr[i], SCHED_FIFO);
-      rc=pthread_attr_setaffinity_np(&rt_sched_attr[i], sizeof(cpu_set_t), &threadcpu);
+      rc=pthread_attr_setinheritsched(&rt_sched_attr[i], PTHREAD_EXPLICIT_SCHED); // child threads need their scheduling expliciaty stated in their creationg (alternative PTHREAD_INHERIT_SCHED)
+      rc=pthread_attr_setschedpolicy(&rt_sched_attr[i], SCHED_FIFO); // sets thread scheduling policy for thread - same policy for all threads
+      rc=pthread_attr_setaffinity_np(&rt_sched_attr[i], sizeof(cpu_set_t), &threadcpu); // sets thread to run on given CPU core
 
       rt_param[i].sched_priority=rt_max_prio-i;
       pthread_attr_setschedparam(&rt_sched_attr[i], &rt_param[i]);
 
       threadParams[i].threadIdx=i;
     }
-   
-    printf("Service threads will run on %d CPU cores\n", CPU_COUNT(&threadcpu));
 
     // Create Service threads which will block awaiting release for:
     //
@@ -310,6 +327,27 @@ void main(void)
         perror("pthread_create for service 7");
     else
         printf("pthread_create successful for service 7\n");
+        
+     // opens serial port
+     const char device[] = "/dev/ttyS0";//"/dev/serial0";//
+     fd = open(device, O_RDWR | O_DSYNC | O_APPEND | O_NOCTTY | O_NDELAY );//| O_NDELAY ); //0_DSYNC O_RDWR 
+     if(fd < 0)
+     {
+         perror("error to open /dev/ttySx\n");
+         exit(1);
+     }
+ 
+     // from embedded ninja uart_config
+     if (fd > 0)
+     {
+        uart_config(fd); 
+     }  
+    
+    // set serial buffer to all zeroes
+    memset(buffer,0,sizeof(buffer));  
+        
+    // Release Serial comms semaphore
+    sem_post(&semSerial);
 
 
     // Wait for service threads to initialize and await relese by sequencer.
@@ -330,17 +368,13 @@ void main(void)
     timer_create(CLOCK_REALTIME, NULL, &timer_1);
 
     signal(SIGALRM, (void(*)()) Sequencer);
-
+ 
 
     /* arm the interval timer */
-    itime.it_interval.tv_sec = 0;
-    itime.it_interval.tv_nsec = 10000000;
-    itime.it_value.tv_sec = 0;
-    itime.it_value.tv_nsec = 10000000;
-    //itime.it_interval.tv_sec = 1;
-    //itime.it_interval.tv_nsec = 0;
-    //itime.it_value.tv_sec = 1;
-    //itime.it_value.tv_nsec = 0;
+    itime.it_interval.tv_sec = 1;
+    itime.it_interval.tv_nsec = 0;
+    itime.it_value.tv_sec = 1;
+    itime.it_value.tv_nsec = 0;
 
     timer_settime(timer_1, flags, &itime, &last_itime);
 
@@ -362,11 +396,12 @@ void Sequencer(int id)
 {
     struct timespec current_time_val;
     double current_realtime;
-    int rc, flags=0;
+    //int rc, flags=0;
 
     // received interval timer signal
            
     seqCnt++;
+    syslog(LOG_CRIT, "Sequencer Running seqCnt= %llu \n", seqCnt);
 
     //clock_gettime(MY_CLOCK_TYPE, &current_time_val); current_realtime=realtime(&current_time_val);
     //printf("Sequencer on core %d for cycle %llu @ sec=%6.9lf\n", sched_getcpu(), seqCnt, current_realtime-start_realtime);
@@ -380,12 +415,13 @@ void Sequencer(int id)
 
     // Service_2 = RT_MAX-2	@ 20 Hz
     //if((seqCnt % 5) == 0) sem_post(&semS2);
+    if((seqCnt % 20) == 0) sem_post(&semS2);
 
     // Service_3 = RT_MAX-3	@ 10 Hz
     //if((seqCnt % 10) == 0) sem_post(&semS3);
 
     // Service_4 = RT_MAX-4	@ 5 Hz
-    if((seqCnt % 20) == 0) sem_post(&semS4);
+    //if((seqCnt % 20) == 0) sem_post(&semS4);
 
     // Service_5 = RT_MAX-5	@ 2 Hz
     //if((seqCnt % 50) == 0) sem_post(&semS5);
@@ -394,10 +430,13 @@ void Sequencer(int id)
     //if((seqCnt % 100) == 0) sem_post(&semS6);
 
     // Service_7 = RT_MIN	1 Hz
-    if((seqCnt % 100) == 0) sem_post(&semS7);
+    //if((seqCnt % 100) == 0) sem_post(&semS7);
 
     
-    if(abortTest || (seqCnt >= sequencePeriods))
+    if(seqCnt > sequencePeriods)
+        seqCnt = 1; // resets seqCnt
+    
+    if(abortTest)
     {
         // disable interval timer
         itime.it_interval.tv_sec = 0;
@@ -452,13 +491,18 @@ void *Service_1(void *threadp)
     pthread_exit((void *)0);
 }
 
-
+//
+// 20Hz frequency
+// Every 50ms request data from TIVA
+// Uses semaphore to arbitrate serial comms port
+//
 void *Service_2(void *threadp)
 {
     struct timespec current_time_val;
     double current_realtime;
     unsigned long long S2Cnt=0;
     threadParams_t *threadParams = (threadParams_t *)threadp;
+    //char service_2_buffer[7];
 
     clock_gettime(MY_CLOCK_TYPE, &current_time_val); current_realtime=realtime(&current_time_val);
     syslog(LOG_CRIT, "S2 thread @ sec=%6.9lf\n", current_realtime-start_realtime);
@@ -466,8 +510,41 @@ void *Service_2(void *threadp)
 
     while(!abortS2)
     {
+        // wait until sequencer releases thread
         sem_wait(&semS2);
         S2Cnt++;
+        
+        //////////////////////////////////////////////////////
+        //    Working Code of Service 2
+        //////////////////////////////////////////////////////
+        // take serial comms port if free
+        sem_wait(&semSerial);
+        char service_2_buffer[] = { 0xAF, 0x3, 0x00, 0x00, 0x00, 0x00, 0xFA};
+        nwrite = write(fd, service_2_buffer, 7);//7
+        if(nwrite < 0)
+        {
+            syslog(LOG_CRIT, "write error %s\n", strerror(errno));
+        }
+        
+        memset(service_2_buffer, 0, sizeof(service_2_buffer));	
+        
+        nread = read(fd,&service_2_buffer[0],sizeof(7));
+        if(nread < 0)
+        {
+            printf("read error %s\n", strerror(errno));
+        }
+        
+        if((service_2_buffer[0] == 0xAF) && (service_2_buffer[6] == 0xFA) && (service_2_buffer[6] == 0x02))
+        {
+            service_2_data = ((service_2_buffer[2] << 24) | ( service_2_buffer[3] << 16 ) | ( service_2_buffer[4] << 8 ) | ( service_2_buffer[5] ));
+            syslog(LOG_CRIT, "service_2_data is %ld\n", service_2_data);
+        }
+        else
+            syslog(LOG_CRIT, "service_2_data is invalid\n");
+            
+        memset(service_2_buffer, 0, sizeof(service_2_buffer));	
+        sem_post(&semSerial); // release serial port
+        //////////////////////////////////////////////////////
 
         clock_gettime(MY_CLOCK_TYPE, &current_time_val); current_realtime=realtime(&current_time_val);
         syslog(LOG_CRIT, "S2 20 Hz on core %d for release %llu @ sec=%6.9lf\n", sched_getcpu(), S2Cnt, current_realtime-start_realtime);
