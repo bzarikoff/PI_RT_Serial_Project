@@ -415,7 +415,7 @@ void Sequencer(int id)
 
     // Service_2 = RT_MAX-2	@ 20 Hz
     //if((seqCnt % 5) == 0) sem_post(&semS2);
-    if((seqCnt % 20) == 0) sem_post(&semS2);
+    if((seqCnt % 5) == 0) sem_post(&semS2);
 
     // Service_3 = RT_MAX-3	@ 10 Hz
     //if((seqCnt % 10) == 0) sem_post(&semS3);
@@ -503,23 +503,27 @@ void *Service_2(void *threadp)
     unsigned long long S2Cnt=0;
     threadParams_t *threadParams = (threadParams_t *)threadp;
     //char service_2_buffer[7];
+    int index = 1;
 
     clock_gettime(MY_CLOCK_TYPE, &current_time_val); current_realtime=realtime(&current_time_val);
     syslog(LOG_CRIT, "S2 thread @ sec=%6.9lf\n", current_realtime-start_realtime);
     printf("S2 thread @ sec=%6.9lf\n", current_realtime-start_realtime);
+    
+    sleep(0.25);
 
     while(!abortS2)
     {
         // wait until sequencer releases thread
         sem_wait(&semS2);
         S2Cnt++;
+        index = 1;
         
         //////////////////////////////////////////////////////
         //    Working Code of Service 2
         //////////////////////////////////////////////////////
         // take serial comms port if free
         sem_wait(&semSerial);
-        char service_2_buffer[] = { 0xAF, 0x3, 0x00, 0x00, 0x00, 0x00, 0xFA};
+        char service_2_buffer[7] = { 0xAF, 0x03, 0x12, 0x34, 0x56, 0x78, 0xFA};
         nwrite = write(fd, service_2_buffer, 7);//7
         if(nwrite < 0)
         {
@@ -528,13 +532,37 @@ void *Service_2(void *threadp)
         
         memset(service_2_buffer, 0, sizeof(service_2_buffer));	
         
-        nread = read(fd,&service_2_buffer[0],sizeof(7));
+        nread = read(fd,&service_2_buffer[0],sizeof(service_2_buffer[0]));
         if(nread < 0)
         {
-            printf("read error %s\n", strerror(errno));
+            syslog(LOG_CRIT, "read error %s\n", strerror(errno));
         }
         
-        if((service_2_buffer[0] == 0xAF) && (service_2_buffer[6] == 0xFA) && (service_2_buffer[6] == 0x02))
+        if(service_2_buffer[0] == 0xAF)
+        {
+            while(index<7)
+            {
+                nread = read(fd,&service_2_buffer[index],sizeof(service_2_buffer[0]));
+                index++;
+            }
+        }
+        else
+        {
+            syslog(LOG_CRIT, "Message framed incorrectly");
+        }
+        
+        
+        //printf("%x\n", service_2_buffer[0]);
+        //printf("%x\n", service_2_buffer[1]);
+        //printf("%x\n", service_2_buffer[2]);
+        //printf("%x\n", service_2_buffer[3]);
+        //printf("%x\n", service_2_buffer[4]);
+        //printf("%x\n", service_2_buffer[5]);
+        //printf("%x\n", service_2_buffer[6]);
+        //printf("\n");
+        tcflush(fd,TCIOFLUSH);	
+        
+        if((service_2_buffer[0] == 0xAF) && (service_2_buffer[6] == 0xFA) && (service_2_buffer[1] == 0x02))
         {
             service_2_data = ((service_2_buffer[2] << 24) | ( service_2_buffer[3] << 16 ) | ( service_2_buffer[4] << 8 ) | ( service_2_buffer[5] ));
             syslog(LOG_CRIT, "service_2_data is %ld\n", service_2_data);
